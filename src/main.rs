@@ -1,5 +1,3 @@
-// use std::io::Cursor;
-
 use clap::Parser;
 use image::{io::Reader as ImageReader, DynamicImage, ImageFormat};
 
@@ -10,13 +8,16 @@ struct Args {
     path: String,
 
     #[arg(long)]
-    target_height: Option<u32>,
+    height: Option<u32>,
 
     #[arg(long)]
-    target_width: Option<u32>,
+    width: Option<u32>,
 
     #[arg(long)]
-    target_format: Option<String>
+    format: Option<String>,
+
+    #[arg(long)]
+    quality: Option<u8>,
 }
 
 struct ResizeOptions {
@@ -30,15 +31,19 @@ fn main() {
     let args = Args::parse();
     let path = validate_path(&args.path);
 
-    let mut img = process_image(path);
-    check_size(&img);
-    resize(
-        &mut img,
-        ResizeOptions {
-            height: args.target_height,
-            width: args.target_width,
-        },
-    );
+    let mut img = read_image(path);
+
+    if args.quality.is_some() {
+        img = compress(&mut img, args.quality.unwrap());
+    } else {
+        img = resize(
+            &img,
+            ResizeOptions {
+                height: args.height,
+                width: args.width,
+            },
+        );
+    }
 
     let output_path = get_output_path(&args.path);
 
@@ -63,18 +68,29 @@ fn get_output_path(org_path: &String) -> String {
     output_path
 }
 
-fn check_size(img: &DynamicImage) -> (u32, u32) {
-    let (w, h) = (img.width(), img.height());
-    println!("size: {width}x{height}", width = w, height = h);
-    (w, h)
+fn compress(img: &DynamicImage, quality: u8) -> DynamicImage {
+    if quality == 100 {
+        return img.clone() // no need to resize
+    };
+    if quality > 100 {
+        panic!("quality must be between 0-100")
+    }
+    let resize_options = ResizeOptions {
+        height: Some(img.height() * quality as u32 / 100),
+        width: Some(img.width() * quality as u32 / 100),
+    };
+
+    resize(img, resize_options)
 }
 
-fn resize(img: &mut DynamicImage, arg: ResizeOptions) {
+fn resize(img: &DynamicImage, arg: ResizeOptions) -> DynamicImage {
     let current_w = img.width();
     let current_h = img.height();
     let mut target_w = arg.width.unwrap_or(0);
     let mut target_h = arg.height.unwrap_or(0);
 
+    print!("{}", target_w);
+    print!("{}", target_h);
     // calculate the corresponding h/w if not provided
     if target_h == 0 {
         target_h = current_h * target_w / current_w;
@@ -83,10 +99,10 @@ fn resize(img: &mut DynamicImage, arg: ResizeOptions) {
         target_w = current_w * target_h / current_h;
     }
 
-    img.resize_exact(target_w, target_h, image::imageops::FilterType::Nearest);
+    img.resize_exact(target_w, target_h, image::imageops::FilterType::Nearest)
 }
 
-fn process_image(path: &std::path::Path) -> DynamicImage {
+fn read_image(path: &std::path::Path) -> DynamicImage {
     let reader = ImageReader::open(path)
         .unwrap()
         .with_guessed_format()

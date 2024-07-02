@@ -1,7 +1,7 @@
 use clap::Parser;
-use image::{error::UnsupportedError, io::Reader as ImageReader, DynamicImage, ImageFormat};
+use image::{io::Reader as ImageReader, DynamicImage, ImageFormat};
 use rust_image_processor::validate::{is_path, is_url};
-use std::{io::Cursor, path::Path};
+use std::io::Cursor;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]

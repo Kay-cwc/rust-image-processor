@@ -1,5 +1,6 @@
 use clap::Parser;
 use image::{io::Reader as ImageReader, DynamicImage, ImageFormat};
+use rust_image_processor::validate::{is_path, is_url};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -29,9 +30,9 @@ const OUT_DIR: &str = "./output";
 
 fn main() {
     let args = Args::parse();
-    let path = validate_path(&args.path);
+    // let path = validate_path(&args.path);
 
-    let mut img = read_image(path);
+    let mut img = read_image(&args.path);
 
     if args.quality.is_some() {
         img = compress(&mut img, args.quality.unwrap());
@@ -68,6 +69,9 @@ fn get_output_path(org_path: &String) -> String {
     output_path
 }
 
+/**
+ * compress the image and keep the aspect ratio
+ */
 fn compress(img: &DynamicImage, quality: u8) -> DynamicImage {
     if quality == 100 {
         return img.clone() // no need to resize
@@ -102,26 +106,28 @@ fn resize(img: &DynamicImage, arg: ResizeOptions) -> DynamicImage {
     img.resize_exact(target_w, target_h, image::imageops::FilterType::Nearest)
 }
 
-fn read_image(path: &std::path::Path) -> DynamicImage {
-    let reader = ImageReader::open(path)
-        .unwrap()
-        .with_guessed_format()
-        .unwrap();
+/**
+ * read image from local path or remote url
+ * if the path is none of them, throw error
+ */
+fn read_image(path_or_uri: &String) -> DynamicImage {
+    if is_url(&path_or_uri) {
+        panic!("TODO")
+    }
 
-    let img = match reader.decode() {
-        Ok(img_) => img_,
-        Err(_) => panic!("unable to decode image"),
-    };
+    if is_path(path_or_uri) {
+        let reader = ImageReader::open(path_or_uri)
+            .unwrap()
+            .with_guessed_format()
+            .unwrap();
+    
+        let img = match reader.decode() {
+            Ok(img_) => img_,
+            Err(_) => panic!("unable to decode image"),
+        };
+    
+        return img
+    }
 
-    img
-}
-
-fn validate_path(path_: &String) -> &std::path::Path {
-    let path = std::path::Path::new(path_);
-
-    if !path.is_file() {
-        panic!("{} is not a valid file", path_);
-    };
-
-    path
+    panic!("path must be either a uri or a local path")
 }

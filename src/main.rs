@@ -1,12 +1,16 @@
 use clap::Parser;
-use image::{io::Reader as ImageReader, DynamicImage, ImageFormat};
+use image::{error::UnsupportedError, io::Reader as ImageReader, DynamicImage, ImageFormat};
 use rust_image_processor::validate::{is_path, is_url};
+use std::{io::Cursor, path::Path};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
     #[arg(short, long)]
     path: String,
+
+    #[arg(short, long)]
+    output_path: String,
 
     #[arg(long)]
     height: Option<u32>,
@@ -26,13 +30,14 @@ struct ResizeOptions {
     height: Option<u32>,
 }
 
-const OUT_DIR: &str = "./output";
-
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
-    // let path = validate_path(&args.path);
+    if !is_path(&args.output_path) {
+        panic!("invalid output path")
+    }
 
-    let mut img = read_image(&args.path);
+    let mut img = read_image(&args.path).await;
 
     if args.quality.is_some() {
         img = compress(&mut img, args.quality.unwrap());
@@ -46,27 +51,10 @@ fn main() {
         );
     }
 
-    let output_path = get_output_path(&args.path);
-
-    match img.save_with_format(&output_path, ImageFormat::Jpeg) {
-        Ok(()) => println!("{}", output_path),
-        Err(_) => panic!("failed to save {}", output_path)
+    match img.save_with_format(&args.output_path, ImageFormat::Jpeg) {
+        Ok(()) => println!("processed image is saved to {}", args.output_path),
+        Err(_) => panic!("failed to save {}", args.output_path),
     };
-}
-
-fn get_output_path(org_path: &String) -> String {
-    let filename = org_path.split("/").last().unwrap();
-    let fragments = filename.split('.').collect::<Vec<_>>();
-    let base_filename = fragments[0..fragments.len()-1].concat();
-
-    let output_path = format!(
-        "{base}/{filename}_formatted.{ext}",
-        base=OUT_DIR,
-        filename=base_filename,
-        ext=fragments.last().unwrap()
-    );
-
-    output_path
 }
 
 /**
@@ -74,7 +62,7 @@ fn get_output_path(org_path: &String) -> String {
  */
 fn compress(img: &DynamicImage, quality: u8) -> DynamicImage {
     if quality == 100 {
-        return img.clone() // no need to resize
+        return img.clone(); // no need to resize
     };
     if quality > 100 {
         panic!("quality must be between 0-100")
@@ -93,8 +81,6 @@ fn resize(img: &DynamicImage, arg: ResizeOptions) -> DynamicImage {
     let mut target_w = arg.width.unwrap_or(0);
     let mut target_h = arg.height.unwrap_or(0);
 
-    print!("{}", target_w);
-    print!("{}", target_h);
     // calculate the corresponding h/w if not provided
     if target_h == 0 {
         target_h = current_h * target_w / current_w;
@@ -110,9 +96,9 @@ fn resize(img: &DynamicImage, arg: ResizeOptions) -> DynamicImage {
  * read image from local path or remote url
  * if the path is none of them, throw error
  */
-fn read_image(path_or_uri: &String) -> DynamicImage {
+async fn read_image(path_or_uri: &String) -> DynamicImage {
     if is_url(&path_or_uri) {
-        panic!("TODO")
+        return read_remote_image(path_or_uri).await;
     }
 
     if is_path(path_or_uri) {
@@ -120,14 +106,25 @@ fn read_image(path_or_uri: &String) -> DynamicImage {
             .unwrap()
             .with_guessed_format()
             .unwrap();
-    
-        let img = match reader.decode() {
+
+        return match reader.decode() {
             Ok(img_) => img_,
             Err(_) => panic!("unable to decode image"),
         };
-    
-        return img
     }
 
     panic!("path must be either a uri or a local path")
+}
+
+async fn read_remote_image(uri: &String) -> DynamicImage {
+    let res = match reqwest::get(uri).await {
+        Ok(res) => res,
+        Err(_) => panic!("failed to fetch image from {}", uri),
+    };
+
+    let bytes = res.bytes().await.unwrap();
+    return match ImageReader::new(Cursor::new(bytes)).with_guessed_format() {
+        Ok(r) => r.decode().unwrap(),
+        Err(_) => panic!("unrecognized image type"),
+    };
 }

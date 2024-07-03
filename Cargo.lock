@@ -1444,6 +1444,7 @@ dependencies = [
  "lazy_static",
  "regex",
  "reqwest",
+ "thiserror",
  "tokio",
  "tokio-macros",
 ]

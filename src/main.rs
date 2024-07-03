@@ -2,6 +2,37 @@ use clap::Parser;
 use image::{io::Reader as ImageReader, DynamicImage, ImageFormat};
 use rust_image_processor::validate::{is_path, is_url};
 use std::io::Cursor;
+use thiserror::Error;
+
+// TODO
+// 1. accept file type conversion
+// 2. create an http server to process request.
+
+#[derive(Error, Debug)]
+pub enum ImageProcessorRuntimeError {
+    #[error("invalid image path")]
+    InvalidImgPath,
+    #[error("target is not image")]
+    TargetNotImg,
+}
+
+#[derive(Error, Debug)]
+pub enum ImageProcessorValidationError {
+    #[error("quality must be between 0 to 100")]
+    InvalidQuality,
+    #[error("invalid output path")]
+    InvalidOutputPath,
+    #[error("missing output path")]
+    MissingOutputpath,
+}
+
+#[derive(Error, Debug)]
+pub enum ImageProcessorError {
+    #[error("runtime error")]
+    Runtime(#[from] ImageProcessorRuntimeError),
+    #[error("validation error")]
+    Validation(#[from] ImageProcessorValidationError),
+}
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -25,22 +56,34 @@ struct Args {
     quality: Option<u8>,
 }
 
+impl Args {
+    fn validate(&self) -> Result<(), ImageProcessorValidationError> {
+        if let Some(v) = self.quality {
+            if v <= 100 {
+                return Err(ImageProcessorValidationError::InvalidQuality);
+            }
+        }
+        if !is_path(&self.output_path) {
+            return Err(ImageProcessorValidationError::InvalidOutputPath);
+        }
+        Ok(())
+    }
+}
+
 struct ResizeOptions {
     width: Option<u32>,
     height: Option<u32>,
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), ImageProcessorError> {
     let args = Args::parse();
-    if !is_path(&args.output_path) {
-        panic!("invalid output path")
-    }
+    args.validate()?;
 
-    let mut img = read_image(&args.path).await;
+    let mut img = read_image(&args.path).await?;
 
     if args.quality.is_some() {
-        img = compress(&mut img, args.quality.unwrap());
+        img = compress(&mut img, args.quality.unwrap())?;
     } else {
         img = resize(
             &img,
@@ -55,26 +98,31 @@ async fn main() {
         Ok(()) => println!("processed image is saved to {}", args.output_path),
         Err(_) => panic!("failed to save {}", args.output_path),
     };
+
+    Ok(())
 }
 
 /**
  * compress the image and keep the aspect ratio
  */
-fn compress(img: &DynamicImage, quality: u8) -> DynamicImage {
+fn compress(img: &DynamicImage, quality: u8) -> Result<DynamicImage, ImageProcessorError> {
     if quality == 100 {
-        return img.clone(); // no need to resize
+        return Ok(img.clone()); // no need to resize
     };
     if quality > 100 {
-        panic!("quality must be between 0-100")
+        return Err(ImageProcessorError::Validation(
+            ImageProcessorValidationError::InvalidQuality,
+        ));
     }
     let resize_options = ResizeOptions {
         height: Some(img.height() * quality as u32 / 100),
         width: Some(img.width() * quality as u32 / 100),
     };
 
-    resize(img, resize_options)
+    Ok(resize(img, resize_options))
 }
 
+/** abstraction for resizing the iamge disregarding the aspect ratio */
 fn resize(img: &DynamicImage, arg: ResizeOptions) -> DynamicImage {
     let current_w = img.width();
     let current_h = img.height();
@@ -96,7 +144,7 @@ fn resize(img: &DynamicImage, arg: ResizeOptions) -> DynamicImage {
  * read image from local path or remote url
  * if the path is none of them, throw error
  */
-async fn read_image(path_or_uri: &String) -> DynamicImage {
+async fn read_image(path_or_uri: &String) -> Result<DynamicImage, ImageProcessorRuntimeError> {
     if is_url(&path_or_uri) {
         return read_remote_image(path_or_uri).await;
     }
@@ -108,23 +156,27 @@ async fn read_image(path_or_uri: &String) -> DynamicImage {
             .unwrap();
 
         return match reader.decode() {
-            Ok(img_) => img_,
-            Err(_) => panic!("unable to decode image"),
+            Ok(img_) => Ok(img_),
+            Err(_) => return Err(ImageProcessorRuntimeError::TargetNotImg),
         };
     }
 
-    panic!("path must be either a uri or a local path")
+    return Err(ImageProcessorRuntimeError::InvalidImgPath);
 }
 
-async fn read_remote_image(uri: &String) -> DynamicImage {
+async fn read_remote_image(uri: &String) -> Result<DynamicImage, ImageProcessorRuntimeError> {
     let res = match reqwest::get(uri).await {
         Ok(res) => res,
-        Err(_) => panic!("failed to fetch image from {}", uri),
+        Err(_) => return Err(ImageProcessorRuntimeError::InvalidImgPath),
     };
 
     let bytes = res.bytes().await.unwrap();
-    return match ImageReader::new(Cursor::new(bytes)).with_guessed_format() {
-        Ok(r) => r.decode().unwrap(),
-        Err(_) => panic!("unrecognized image type"),
+    return match ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+    {
+        Ok(r) => Ok(r),
+        Err(_) => return Err(ImageProcessorRuntimeError::TargetNotImg),
     };
 }

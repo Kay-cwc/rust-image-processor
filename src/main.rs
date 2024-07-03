@@ -107,13 +107,8 @@ async fn main() -> Result<(), ImageProcessorError> {
  */
 fn compress(img: &DynamicImage, quality: u8) -> Result<DynamicImage, ImageProcessorError> {
     if quality == 100 {
-        return Ok(img.clone()); // no need to resize
+        return Ok(img.clone()); // no need to resize. // FIXME: is this the only way?
     };
-    if quality > 100 {
-        return Err(ImageProcessorError::Validation(
-            ImageProcessorValidationError::InvalidQuality,
-        ));
-    }
     let resize_options = ResizeOptions {
         height: Some(img.height() * quality as u32 / 100),
         width: Some(img.width() * quality as u32 / 100),

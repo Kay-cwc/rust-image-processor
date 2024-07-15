@@ -1,8 +1,11 @@
-use clap::Parser;
+use actix_web::{get, http::header::ContentType, App, HttpResponse, HttpServer, Responder};
+use actix_web_validator;
 use image::{io::Reader as ImageReader, DynamicImage, ImageFormat};
-use rust_image_processor::validate::{is_path, is_url};
+use serde::Deserialize;
 use std::io::Cursor;
 use thiserror::Error;
+use validator::Validate;
+use rust_image_processor::validate::is_url;
 
 // TODO
 // 1. accept file type conversion
@@ -34,40 +37,11 @@ pub enum ImageProcessorError {
     Validation(#[from] ImageProcessorValidationError),
 }
 
-#[derive(Parser, Debug)]
-#[command(version, about)]
+#[derive(Deserialize, Validate, Debug)]
 struct Args {
-    #[arg(short, long)]
-    path: String,
-
-    #[arg(short, long)]
-    output_path: String,
-
-    #[arg(long)]
-    height: Option<u32>,
-
-    #[arg(long)]
-    width: Option<u32>,
-
-    #[arg(long)]
-    format: Option<String>,
-
-    #[arg(long)]
+    url: String,
+    #[validate(range(min=1, max=100))]
     quality: Option<u8>,
-}
-
-impl Args {
-    fn validate(&self) -> Result<(), ImageProcessorValidationError> {
-        if let Some(v) = self.quality {
-            if v <= 100 {
-                return Err(ImageProcessorValidationError::InvalidQuality);
-            }
-        }
-        if !is_path(&self.output_path) {
-            return Err(ImageProcessorValidationError::InvalidOutputPath);
-        }
-        Ok(())
-    }
 }
 
 struct ResizeOptions {
@@ -75,31 +49,53 @@ struct ResizeOptions {
     height: Option<u32>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), ImageProcessorError> {
-    let args = Args::parse();
-    args.validate()?;
-
-    let mut img = read_image(&args.path).await?;
-
-    if args.quality.is_some() {
-        img = compress(&mut img, args.quality.unwrap())?;
-    } else {
-        img = resize(
-            &img,
-            ResizeOptions {
-                height: args.height,
-                width: args.width,
-            },
-        );
+#[get("/")]
+async fn resize_handler(query: actix_web_validator::Query<Args>) -> impl Responder {
+    // oad image from remote and parse as dynamic image
+    if !is_url(&query.url) {
+        return HttpResponse::BadRequest().body("invalid url");
     }
-
-    match img.save_with_format(&args.output_path, ImageFormat::Jpeg) {
-        Ok(()) => println!("processed image is saved to {}", args.output_path),
-        Err(_) => panic!("failed to save {}", args.output_path),
+    let mut img = match read_remote_image(&query.url).await {
+        Ok(img_) => img_,
+        Err(err) => return HttpResponse::BadRequest().body(err.to_string())
     };
+    // compress image
+    img = compress(&mut img, query.quality.unwrap_or(100)).expect("failed to compress image");
+    // process the image as bytes response
+    let format = detect_image_format(&img);
+    let mut bytes = Vec::new();
+    img.write_to(&mut Cursor::new(&mut bytes), format).expect("failed to convert to buffer");
+    HttpResponse::Ok()
+        .append_header(("accept-ranges", "bytes"))
+        .content_type(ContentType::png())
+        .body(bytes)
+}
 
-    Ok(())
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        App::new()
+            .service(resize_handler)
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await
+}
+
+fn detect_image_format(img: &DynamicImage) -> ImageFormat {
+    match img.color() {
+        image::ColorType::L8 => ImageFormat::Png,
+        image::ColorType::La8 => ImageFormat::Png,
+        image::ColorType::Rgb8 => ImageFormat::Png,
+        image::ColorType::Rgba8 => ImageFormat::Png,
+        image::ColorType::L16 => ImageFormat::Png,
+        image::ColorType::La16 => ImageFormat::Png,
+        image::ColorType::Rgb16 => ImageFormat::Png,
+        image::ColorType::Rgba16 => ImageFormat::Png,
+        image::ColorType::Rgb32F => ImageFormat::OpenExr,
+        image::ColorType::Rgba32F => ImageFormat::OpenExr,
+        _ => ImageFormat::Png, // Default to PNG for unknown formats
+    }
 }
 
 /**
@@ -133,30 +129,6 @@ fn resize(img: &DynamicImage, arg: ResizeOptions) -> DynamicImage {
     }
 
     img.resize_exact(target_w, target_h, image::imageops::FilterType::Nearest)
-}
-
-/**
- * read image from local path or remote url
- * if the path is none of them, throw error
- */
-async fn read_image(path_or_uri: &String) -> Result<DynamicImage, ImageProcessorRuntimeError> {
-    if is_url(&path_or_uri) {
-        return read_remote_image(path_or_uri).await;
-    }
-
-    if is_path(path_or_uri) {
-        let reader = ImageReader::open(path_or_uri)
-            .unwrap()
-            .with_guessed_format()
-            .unwrap();
-
-        return match reader.decode() {
-            Ok(img_) => Ok(img_),
-            Err(_) => return Err(ImageProcessorRuntimeError::TargetNotImg),
-        };
-    }
-
-    return Err(ImageProcessorRuntimeError::InvalidImgPath);
 }
 
 async fn read_remote_image(uri: &String) -> Result<DynamicImage, ImageProcessorRuntimeError> {
